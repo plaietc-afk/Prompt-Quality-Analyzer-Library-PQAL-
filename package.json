@@ -1,0 +1,15 @@
+{
+  "name": "prompt-quality-analyzer-library",
+  "version": "1.0.0",
+  "description": "Prompt Quality Analyzer & Library — AI-powered prompt scoring based on CRISPE, COSTAR, and Anthropic guidelines",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5"
+  }
+}

@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prompt Quality Analyzer &amp; Library</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'Sarabun', 'Noto Sans Thai', 'sans-serif'],
+            thai: ['Sarabun', 'Noto Sans Thai', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fadeIn 0.3s ease-out; }
+    @keyframes ringAnim { from { stroke-dashoffset: 282.74; } }
+    .ring-animate { animation: ringAnim 0.8s ease-out forwards; }
+    @keyframes barGrow { from { width: 0; } }
+    .bar-animate { animation: barGrow 0.8s ease-out forwards; }
+    .tab-badge { font-size: 0.65rem; min-width: 1.25rem; height: 1.25rem; }
+    textarea:focus, select:focus, button:focus-visible, input:focus { outline: 2px solid #6366f1; outline-offset: 2px; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #1f2937; }
+    ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 font-sans min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+
+    /* ───────────────── Constants ───────────────── */
+    const PROMPT_TYPES = [
+      { value: 'general', label: 'General' },
+      { value: 'summarization', label: 'Summarization' },
+      { value: 'code', label: 'Code / Technical' },
+      { value: 'creative', label: 'Creative Writing' },
+      { value: 'analysis', label: 'Analysis / Research' },
+      { value: 'translation', label: 'Translation' },
+      { value: 'roleplay', label: 'Role / Persona' },
+      { value: 'data', label: 'Data Extraction' }
+    ];
+
+    const LANGUAGES = [
+      { value: 'auto', label: 'Auto-detect' },
+      { value: 'en', label: 'English' },
+      { value: 'th', label: 'Thai (ไทย)' }
+    ];
+
+    const DIMENSIONS = [
+      { key: 'clarity', label: 'Clarity', desc: 'Task is unambiguous and understandable' },
+      { key: 'specificity', label: 'Specificity', desc: 'Precise instructions with constraints' },
+      { key: 'context', label: 'Context', desc: 'Sufficient background provided' },
+      { key: 'outputFormat', label: 'Output Format', desc: 'Desired format explicitly stated' },
+      { key: 'roleAssignment', label: 'Role Assignment', desc: 'Persona or expertise assigned' },
+      { key: 'conciseness', label: 'Conciseness', desc: 'Free of redundancy and filler' }
+    ];
+
+    const STORAGE_PREFIX = 'promptlib:';
+    const INDEX_KEY = 'promptlib:index';
+    const MAX_ENTRIES = 100;
+
+    /* ───────────────── Storage Helpers ───────────────── */
+    const storage = {
+      _available: null,
+      isAvailable() {
+        if (this._available !== null) return this._available;
+        try {
+          const k = '__storage_test__';
+          localStorage.setItem(k, '1');
+          localStorage.removeItem(k);
+          this._available = true;
+        } catch { this._available = false; }
+        return this._available;
+      },
+      getIndex() {
+        try {
+          const raw = localStorage.getItem(INDEX_KEY);
+          return raw ? JSON.parse(raw) : [];
+        } catch { return []; }
+      },
+      setIndex(ids) {
+        try { localStorage.setItem(INDEX_KEY, JSON.stringify(ids)); } catch {}
+      },
+      getEntry(id) {
+        try {
+          const raw = localStorage.getItem(STORAGE_PREFIX + id);
+          return raw ? JSON.parse(raw) : null;
+        } catch { return null; }
+      },
+      saveEntry(entry) {
+        try {
+          localStorage.setItem(STORAGE_PREFIX + entry.id, JSON.stringify(entry));
+          let ids = this.getIndex();
+          ids = [entry.id, ...ids.filter(i => i !== entry.id)];
+          if (ids.length > MAX_ENTRIES) {
+            const removed = ids.splice(MAX_ENTRIES);
+            removed.forEach(id => { try { localStorage.removeItem(STORAGE_PREFIX + id); } catch {} });
+          }
+          this.setIndex(ids);
+        } catch {}
+      },
+      deleteEntry(id) {
+        try {
+          localStorage.removeItem(STORAGE_PREFIX + id);
+          const ids = this.getIndex().filter(i => i !== id);
+          this.setIndex(ids);
+        } catch {}
+      },
+      clearAll() {
+        try {
+          const ids = this.getIndex();
+          ids.forEach(id => { try { localStorage.removeItem(STORAGE_PREFIX + id); } catch {} });
+          this.setIndex([]);
+        } catch {}
+      },
+      getAllEntries() {
+        const ids = this.getIndex();
+        return ids.map(id => this.getEntry(id)).filter(Boolean);
+      }
+    };
+
+    /* ───────────────── API ───────────────── */
+    const SYSTEM_PROMPT = `You are a professional prompt quality evaluator. Evaluate the user's AI prompt against the CRISPE framework, COSTAR framework, and Anthropic Prompt Engineering Guidelines.
+
+Return ONLY a valid JSON object with no markdown, no code fences, no preamble, no explanation.
+
+JSON Schema:
+{
+  "overall": <integer 0-100>,
+  "grade": "<Excellent|Good|Fair|Needs Work>",
+  "summary": "<one sentence summary of prompt quality>",
+  "dimensions": {
+    "clarity": <integer 0-100>,
+    "specificity": <integer 0-100>,
+    "context": <integer 0-100>,
+    "outputFormat": <integer 0-100>,
+    "roleAssignment": <integer 0-100>,
+    "conciseness": <integer 0-100>
+  },
+  "feedback": ["<actionable feedback 1>", "<actionable feedback 2>", ...],
+  "improvedPrompt": "<full rewritten best-practice version of the prompt>"
+}
+
+Scoring criteria per dimension:
+- Clarity (CRISPE: Request / COSTAR: Objective): Task is unambiguous; a reader unfamiliar with the domain can understand the intent.
+- Specificity (CRISPE: Experiment / COSTAR: Audience): Instructions are precise; includes examples, constraints, or scope boundaries.
+- Context (CRISPE: Insight / COSTAR: Context): Sufficient background is provided for the AI to generate a grounded response.
+- Output Format (CRISPE: Personality / COSTAR: Response): Desired format (length, structure, language, tone) is explicitly stated.
+- Role Assignment (CRISPE: Capacity / COSTAR: Style + Tone): A persona, expertise level, or role is assigned to the AI.
+- Conciseness (Anthropic Guidelines): Prompt is free of redundancy, filler instructions, and contradictory directives.
+
+Grade mapping: Excellent (90-100), Good (70-89), Fair (50-69), Needs Work (0-49).
+Provide 3-5 actionable feedback items, each starting with a short action-oriented prefix (e.g., "Add context:", "Specify format:").
+Feedback and improvedPrompt MUST match the language of the input prompt (Thai or English).`;
+
+    async function analyzePrompt(promptText, promptType, language) {
+      const userMessage = `Analyze this prompt:\n\nPrompt Type: ${promptType}\nLanguage: ${language}\n\n---\n${promptText}\n---`;
+
+      const body = {
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1500,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: userMessage }]
+      };
+
+      let lastError;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          if (attempt === 1) await new Promise(r => setTimeout(r, 5000));
+          const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          if (!res.ok) throw new Error(`API error: ${res.status}`);
+          const data = await res.json();
+          const text = data.content?.[0]?.text || data.text || '';
+          const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+          const parsed = JSON.parse(cleaned);
+          if (typeof parsed.overall !== 'number' || !parsed.dimensions || !parsed.improvedPrompt) {
+            throw new Error('Invalid response schema');
+          }
+          return parsed;
+        } catch (e) { lastError = e; }
+      }
+      throw lastError;
+    }
+
+    /* ───────────────── Sub-Components ───────────────── */
+
+    function ScoreRing({ score, grade }) {
+      const r = 45, c = 2 * Math.PI * r;
+      const offset = c - (score / 100) * c;
+      const color = score >= 90 ? '#22c55e' : score >= 70 ? '#22c55e' : score >= 50 ? '#f59e0b' : '#ef4444';
+      return (
+        <div className="flex flex-col items-center">
+          <svg width="140" height="140" viewBox="0 0 100 100" role="img" aria-label={`Overall score: ${score}`}>
+            <circle cx="50" cy="50" r={r} fill="none" stroke="#374151" strokeWidth="8" />
+            <circle cx="50" cy="50" r={r} fill="none" stroke={color} strokeWidth="8"
+              strokeLinecap="round" strokeDasharray={c} strokeDashoffset={offset}
+              transform="rotate(-90 50 50)" className="ring-animate"
+              style={{ transition: 'stroke-dashoffset 0.8s ease-out' }} />
+            <text x="50" y="46" textAnchor="middle" fill="#f3f4f6" fontSize="22" fontWeight="700">{score}</text>
+            <text x="50" y="60" textAnchor="middle" fill="#9ca3af" fontSize="9">/100</text>
+          </svg>
+          <span className={`mt-2 text-sm font-semibold px-3 py-1 rounded-full ${
+            score >= 90 ? 'bg-green-500/20 text-green-400' :
+            score >= 70 ? 'bg-green-500/20 text-green-400' :
+            score >= 50 ? 'bg-amber-500/20 text-amber-400' :
+            'bg-red-500/20 text-red-400'
+          }`}>{grade}</span>
+        </div>
+      );
+    }
+
+    function DimensionBar({ label, desc, score }) {
+      const color = score >= 70 ? 'bg-green-500' : score >= 40 ? 'bg-amber-400' : 'bg-red-500';
+      return (
+        <div className="mb-3" role="meter" aria-label={`${label}: ${score}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={score}>
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-sm font-medium text-gray-300">{label}</span>
+            <span className="text-sm font-semibold text-gray-100">{score}</span>
+          </div>
+          <div className="h-2.5 bg-gray-700 rounded-full overflow-hidden" title={desc}>
+            <div className={`h-full rounded-full bar-animate ${color}`} style={{ width: `${score}%` }} />
+          </div>
+        </div>
+      );
+    }
+
+    function CopyButton({ text, label }) {
+      const [copied, setCopied] = useState(false);
+      const handleCopy = useCallback(() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      }, [text]);
+      return (
+        <button onClick={handleCopy} aria-label={label || 'Copy to clipboard'}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors focus-visible:ring-2 focus-visible:ring-indigo-500">
+          {copied ? (
+            <><svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>Copied!</>
+          ) : (
+            <><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>Copy</>
+          )}
+        </button>
+      );
+    }
+
+    /* ───────────────── Analyze Tab ───────────────── */
+    function AnalyzeTab({ onLibraryUpdate }) {
+      const [prompt, setPrompt] = useState('');
+      const [promptType, setPromptType] = useState('general');
+      const [language, setLanguage] = useState('auto');
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState('');
+      const [result, setResult] = useState(null);
+      const [saved, setSaved] = useState(false);
+
+      const handleAnalyze = useCallback(async () => {
+        if (!prompt.trim() || loading) return;
+        setLoading(true);
+        setError('');
+        setResult(null);
+        setSaved(false);
+        try {
+          const data = await analyzePrompt(prompt.trim(), promptType, language);
+          setResult(data);
+        } catch (e) {
+          setError('Analysis failed. Please check your connection and try again.');
+        } finally {
+          setLoading(false);
+        }
+      }, [prompt, promptType, language, loading]);
+
+      const handleSave = useCallback(() => {
+        if (!result || saved) return;
+        if (!storage.isAvailable()) {
+          setError('Storage is unavailable. Cannot save to library.');
+          return;
+        }
+        const entry = {
+          id: crypto.randomUUID(),
+          savedAt: new Date().toISOString(),
+          originalPrompt: prompt.trim(),
+          improvedPrompt: result.improvedPrompt,
+          promptType,
+          language,
+          score: {
+            overall: result.overall,
+            clarity: result.dimensions.clarity,
+            specificity: result.dimensions.specificity,
+            context: result.dimensions.context,
+            outputFormat: result.dimensions.outputFormat,
+            roleAssignment: result.dimensions.roleAssignment,
+            conciseness: result.dimensions.conciseness
+          },
+          grade: result.grade,
+          feedback: result.feedback
+        };
+        storage.saveEntry(entry);
+        setSaved(true);
+        onLibraryUpdate();
+      }, [result, saved, prompt, promptType, language, onLibraryUpdate]);
+
+      return (
+        <div className="max-w-4xl mx-auto fade-in">
+          {/* Input Section */}
+          <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800 mb-6">
+            <h2 className="text-lg font-semibold mb-4 text-gray-100">Analyze Your Prompt</h2>
+            <textarea
+              value={prompt}
+              onChange={e => setPrompt(e.target.value)}
+              placeholder="Paste or type your AI prompt here..."
+              aria-label="Prompt input"
+              rows={6}
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-gray-100 placeholder-gray-500 resize-y font-thai text-sm leading-relaxed focus:border-indigo-500 transition-colors"
+            />
+            <div className="flex flex-wrap gap-3 mt-4">
+              <div className="flex-1 min-w-[180px]">
+                <label htmlFor="prompt-type" className="block text-xs text-gray-400 mb-1.5 font-medium">Prompt Type</label>
+                <select id="prompt-type" value={promptType} onChange={e => setPromptType(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 transition-colors">
+                  {PROMPT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+              <div className="flex-1 min-w-[180px]">
+                <label htmlFor="prompt-lang" className="block text-xs text-gray-400 mb-1.5 font-medium">Language</label>
+                <select id="prompt-lang" value={language} onChange={e => setLanguage(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 transition-colors">
+                  {LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+                </select>
+              </div>
+              <div className="flex items-end">
+                <button onClick={handleAnalyze} disabled={!prompt.trim() || loading}
+                  aria-label="Analyze prompt"
+                  className="px-6 py-2 rounded-lg font-semibold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20 hover:shadow-indigo-500/40">
+                  {loading ? (
+                    <span className="flex items-center gap-2">
+                      <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" /></svg>
+                      Analyzing...
+                    </span>
+                  ) : 'Analyze'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Error */}
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 mb-6 text-red-400 text-sm fade-in" role="alert">
+              {error}
+            </div>
+          )}
+
+          {/* Results */}
+          {result && (
+            <div className="fade-in space-y-6">
+              {/* Score + Dimensions */}
+              <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800">
+                <div className="flex flex-col md:flex-row gap-8">
+                  {/* Score Ring */}
+                  <div className="flex-shrink-0 flex justify-center">
+                    <ScoreRing score={result.overall} grade={result.grade} />
+                  </div>
+                  {/* Dimension Bars */}
+                  <div className="flex-1">
+                    <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Dimension Scores</h3>
+                    {DIMENSIONS.map(d => (
+                      <DimensionBar key={d.key} label={d.label} desc={d.desc} score={result.dimensions[d.key]} />
+                    ))}
+                  </div>
+                </div>
+                {/* Summary */}
+                <p className="mt-5 text-sm text-gray-300 bg-gray-800/50 rounded-lg px-4 py-3 border border-gray-700/50 font-thai">
+                  {result.summary}
+                </p>
+              </div>
+
+              {/* Feedback */}
+              <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800">
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Feedback</h3>
+                <ul className="space-y-2">
+                  {(result.feedback || []).map((item, i) => (
+                    <li key={i} className="flex items-start gap-3 text-sm text-gray-300 font-thai">
+                      <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-indigo-400 flex-shrink-0" />
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {/* Improved Prompt */}
+              <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Improved Prompt</h3>
+                  <div className="flex gap-2">
+                    <CopyButton text={result.improvedPrompt} label="Copy improved prompt" />
+                    <button onClick={handleSave} disabled={saved}
+                      aria-label="Save to library"
+                      className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+                        saved ? 'bg-green-500/20 text-green-400' : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                      }`}>
+                      {saved ? (
+                        <><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>Saved</>
+                      ) : (
+                        <><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>Save to Library</>
+                      )}
+                    </button>
+                  </div>
+                </div>
+                <div className="bg-gray-800 rounded-xl p-4 max-h-64 overflow-y-auto border border-gray-700/50">
+                  <p className="text-sm text-gray-200 whitespace-pre-wrap font-thai leading-relaxed">{result.improvedPrompt}</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ───────────────── Library Tab ───────────────── */
+    function LibraryTab({ refreshKey }) {
+      const [entries, setEntries] = useState([]);
+      const [search, setSearch] = useState('');
+      const [typeFilter, setTypeFilter] = useState('all');
+      const [confirmDelete, setConfirmDelete] = useState(null);
+      const [confirmClearAll, setConfirmClearAll] = useState(false);
+      const storageAvailable = storage.isAvailable();
+
+      useEffect(() => {
+        if (storageAvailable) setEntries(storage.getAllEntries());
+      }, [refreshKey, storageAvailable]);
+
+      const filtered = entries.filter(e => {
+        const matchSearch = !search || e.improvedPrompt.toLowerCase().includes(search.toLowerCase()) ||
+          e.originalPrompt.toLowerCase().includes(search.toLowerCase());
+        const matchType = typeFilter === 'all' || e.promptType === typeFilter;
+        return matchSearch && matchType;
+      });
+
+      const handleDelete = useCallback((id) => {
+        storage.deleteEntry(id);
+        setEntries(storage.getAllEntries());
+        setConfirmDelete(null);
+      }, []);
+
+      const handleClearAll = useCallback(() => {
+        storage.clearAll();
+        setEntries([]);
+        setConfirmClearAll(false);
+      }, []);
+
+      const formatDate = useCallback((iso, lang) => {
+        const d = new Date(iso);
+        if (lang === 'th') {
+          const thYear = d.getFullYear() + 543;
+          return `${d.getDate()}/${d.getMonth() + 1}/${thYear} ${d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}`;
+        }
+        return d.toISOString().replace('T', ' ').substring(0, 16);
+      }, []);
+
+      const typeLabel = useCallback((val) => {
+        return PROMPT_TYPES.find(t => t.value === val)?.label || val;
+      }, []);
+
+      const scoreColor = (s) => s >= 70 ? 'text-green-400 bg-green-500/15' : s >= 50 ? 'text-amber-400 bg-amber-500/15' : 'text-red-400 bg-red-500/15';
+
+      if (!storageAvailable) {
+        return (
+          <div className="max-w-4xl mx-auto text-center py-20 text-gray-400">
+            <svg className="w-12 h-12 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+            <p className="text-lg font-medium">Storage Unavailable</p>
+            <p className="text-sm mt-1">Library persistence is not available in this browser.</p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="max-w-4xl mx-auto fade-in">
+          {/* Search & Filter Bar */}
+          <div className="bg-gray-900 rounded-2xl p-4 border border-gray-800 mb-6 flex flex-wrap gap-3 items-center">
+            <div className="flex-1 min-w-[200px] relative">
+              <svg className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+              <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Search prompts..." aria-label="Search library"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:border-indigo-500 transition-colors" />
+            </div>
+            <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} aria-label="Filter by prompt type"
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 transition-colors">
+              <option value="all">All Types</option>
+              {PROMPT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+            {entries.length > 0 && (
+              confirmClearAll ? (
+                <div className="flex gap-2 items-center">
+                  <span className="text-xs text-red-400">Delete all?</span>
+                  <button onClick={handleClearAll} className="px-3 py-1.5 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors" aria-label="Confirm clear all">Yes</button>
+                  <button onClick={() => setConfirmClearAll(false)} className="px-3 py-1.5 text-xs rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors" aria-label="Cancel clear all">No</button>
+                </div>
+              ) : (
+                <button onClick={() => setConfirmClearAll(true)}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-gray-800 hover:bg-red-500/20 text-gray-400 hover:text-red-400 border border-gray-700 transition-colors" aria-label="Clear all library entries">
+                  Clear All
+                </button>
+              )
+            )}
+          </div>
+
+          {/* Entries */}
+          {filtered.length === 0 ? (
+            <div className="text-center py-20 text-gray-500">
+              <svg className="w-16 h-16 mx-auto mb-4 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+              <p className="text-lg font-medium text-gray-400">
+                {entries.length === 0 ? 'Your library is empty' : 'No matching prompts'}
+              </p>
+              <p className="text-sm mt-1">
+                {entries.length === 0 ? 'Analyze a prompt and save it to start building your collection.' : 'Try adjusting your search or filter.'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filtered.map(entry => (
+                <div key={entry.id} className="bg-gray-900 rounded-xl p-5 border border-gray-800 hover:border-gray-700 transition-colors">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-sm font-semibold text-gray-200 truncate font-thai">
+                        {entry.improvedPrompt.substring(0, 60)}{entry.improvedPrompt.length > 60 ? '...' : ''}
+                      </h3>
+                      <div className="flex flex-wrap items-center gap-2 mt-2">
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700">{typeLabel(entry.promptType)}</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700">{entry.language === 'th' ? 'Thai' : entry.language === 'en' ? 'English' : 'Auto'}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${scoreColor(entry.score.overall)}`}>{entry.score.overall}</span>
+                        <span className="text-xs text-gray-500">{formatDate(entry.savedAt, entry.language)}</span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-2 leading-relaxed font-thai">
+                        {entry.improvedPrompt.substring(0, 120)}{entry.improvedPrompt.length > 120 ? '...' : ''}
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-2 flex-shrink-0">
+                      <CopyButton text={entry.improvedPrompt} label="Copy prompt" />
+                      {confirmDelete === entry.id ? (
+                        <div className="flex gap-1">
+                          <button onClick={() => handleDelete(entry.id)} className="px-2 py-1.5 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors" aria-label="Confirm delete">Yes</button>
+                          <button onClick={() => setConfirmDelete(null)} className="px-2 py-1.5 text-xs rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors" aria-label="Cancel delete">No</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setConfirmDelete(entry.id)} aria-label="Delete prompt"
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-gray-700 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ───────────────── App ───────────────── */
+    function App() {
+      const [tab, setTab] = useState('analyze');
+      const [libraryCount, setLibraryCount] = useState(0);
+      const [libraryRefresh, setLibraryRefresh] = useState(0);
+
+      const updateLibraryCount = useCallback(() => {
+        if (storage.isAvailable()) {
+          setLibraryCount(storage.getIndex().length);
+          setLibraryRefresh(k => k + 1);
+        }
+      }, []);
+
+      useEffect(() => { updateLibraryCount(); }, [updateLibraryCount]);
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          {/* Header */}
+          <header className="bg-gray-900/80 backdrop-blur-sm border-b border-gray-800 sticky top-0 z-50">
+            <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center">
+                  <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+                </div>
+                <h1 className="text-lg font-bold text-gray-100">PQAL</h1>
+                <span className="text-xs text-gray-500 hidden sm:inline">Prompt Quality Analyzer & Library</span>
+              </div>
+              {/* Tab Navigation */}
+              <nav className="flex gap-1 bg-gray-800 rounded-lg p-1" role="tablist">
+                <button role="tab" aria-selected={tab === 'analyze'} aria-controls="tab-analyze"
+                  onClick={() => setTab('analyze')}
+                  className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
+                    tab === 'analyze' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
+                  }`}>
+                  Analyze Prompt
+                </button>
+                <button role="tab" aria-selected={tab === 'library'} aria-controls="tab-library"
+                  onClick={() => setTab('library')}
+                  className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all flex items-center gap-2 ${
+                    tab === 'library' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
+                  }`}>
+                  My Library
+                  {libraryCount > 0 && (
+                    <span className={`tab-badge flex items-center justify-center rounded-full font-bold ${
+                      tab === 'library' ? 'bg-white/20 text-white' : 'bg-gray-700 text-gray-300'
+                    }`}>{libraryCount}</span>
+                  )}
+                </button>
+              </nav>
+            </div>
+          </header>
+
+          {/* Content */}
+          <main className="flex-1 px-4 py-8">
+            <div id="tab-analyze" role="tabpanel" hidden={tab !== 'analyze'}>
+              {tab === 'analyze' && <AnalyzeTab onLibraryUpdate={updateLibraryCount} />}
+            </div>
+            <div id="tab-library" role="tabpanel" hidden={tab !== 'library'}>
+              {tab === 'library' && <LibraryTab refreshKey={libraryRefresh} />}
+            </div>
+          </main>
+
+          {/* Footer */}
+          <footer className="text-center py-4 text-xs text-gray-600 border-t border-gray-800/50">
+            PQAL v1.0 — Scoring based on CRISPE, COSTAR & Anthropic Prompt Engineering Guidelines
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
