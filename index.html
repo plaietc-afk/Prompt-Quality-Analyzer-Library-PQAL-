@@ -169,7 +169,7 @@ Grade mapping: Excellent (90-100), Good (70-89), Fair (50-69), Needs Work (0-49)
 Provide 3-5 actionable feedback items, each starting with a short action-oriented prefix (e.g., "Add context:", "Specify format:").
 Feedback and improvedPrompt MUST match the language of the input prompt (Thai or English).`;
 
-    async function analyzePrompt(promptText, promptType, language) {
+    async function analyzePrompt(promptText, promptType, language, apiKey) {
       const userMessage = `Analyze this prompt:\n\nPrompt Type: ${promptType}\nLanguage: ${language}\n\n---\n${promptText}\n---`;
 
       const body = {
@@ -179,16 +179,22 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
         messages: [{ role: 'user', content: userMessage }]
       };
 
+      const headers = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['x-api-key'] = apiKey;
+
       let lastError;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           if (attempt === 1) await new Promise(r => setTimeout(r, 5000));
           const res = await fetch('/api/analyze', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify(body)
           });
-          if (!res.ok) throw new Error(`API error: ${res.status}`);
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || `API error: ${res.status}`);
+          }
           const data = await res.json();
           const text = data.content?.[0]?.text || data.text || '';
           const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
@@ -265,7 +271,7 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
     }
 
     /* ───────────────── Analyze Tab ───────────────── */
-    function AnalyzeTab({ onLibraryUpdate }) {
+    function AnalyzeTab({ onLibraryUpdate, apiKey }) {
       const [prompt, setPrompt] = useState('');
       const [promptType, setPromptType] = useState('general');
       const [language, setLanguage] = useState('auto');
@@ -281,14 +287,14 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
         setResult(null);
         setSaved(false);
         try {
-          const data = await analyzePrompt(prompt.trim(), promptType, language);
+          const data = await analyzePrompt(prompt.trim(), promptType, language, apiKey);
           setResult(data);
         } catch (e) {
-          setError('Analysis failed. Please check your connection and try again.');
+          setError(e.message || 'Analysis failed. Please check your connection and try again.');
         } finally {
           setLoading(false);
         }
-      }, [prompt, promptType, language, loading]);
+      }, [prompt, promptType, language, loading, apiKey]);
 
       const handleSave = useCallback(() => {
         if (!result || saved) return;
@@ -583,6 +589,11 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
       const [tab, setTab] = useState('analyze');
       const [libraryCount, setLibraryCount] = useState(0);
       const [libraryRefresh, setLibraryRefresh] = useState(0);
+      const [apiKey, setApiKey] = useState(() => {
+        try { return sessionStorage.getItem('pqal_apikey') || ''; } catch { return ''; }
+      });
+      const [showSettings, setShowSettings] = useState(false);
+      const [keyInput, setKeyInput] = useState(apiKey);
 
       const updateLibraryCount = useCallback(() => {
         if (storage.isAvailable()) {
@@ -592,6 +603,13 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
       }, []);
 
       useEffect(() => { updateLibraryCount(); }, [updateLibraryCount]);
+
+      const handleSaveKey = useCallback(() => {
+        const trimmed = keyInput.trim();
+        setApiKey(trimmed);
+        try { sessionStorage.setItem('pqal_apikey', trimmed); } catch {}
+        setShowSettings(false);
+      }, [keyInput]);
 
       return (
         <div className="min-h-screen flex flex-col">
@@ -605,35 +623,76 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
                 <h1 className="text-lg font-bold text-gray-100">PQAL</h1>
                 <span className="text-xs text-gray-500 hidden sm:inline">Prompt Quality Analyzer & Library</span>
               </div>
-              {/* Tab Navigation */}
-              <nav className="flex gap-1 bg-gray-800 rounded-lg p-1" role="tablist">
-                <button role="tab" aria-selected={tab === 'analyze'} aria-controls="tab-analyze"
-                  onClick={() => setTab('analyze')}
-                  className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
-                    tab === 'analyze' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
-                  }`}>
-                  Analyze Prompt
+              <div className="flex items-center gap-3">
+                {/* Tab Navigation */}
+                <nav className="flex gap-1 bg-gray-800 rounded-lg p-1" role="tablist">
+                  <button role="tab" aria-selected={tab === 'analyze'} aria-controls="tab-analyze"
+                    onClick={() => setTab('analyze')}
+                    className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
+                      tab === 'analyze' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
+                    }`}>
+                    Analyze Prompt
+                  </button>
+                  <button role="tab" aria-selected={tab === 'library'} aria-controls="tab-library"
+                    onClick={() => setTab('library')}
+                    className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all flex items-center gap-2 ${
+                      tab === 'library' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
+                    }`}>
+                    My Library
+                    {libraryCount > 0 && (
+                      <span className={`tab-badge flex items-center justify-center rounded-full font-bold ${
+                        tab === 'library' ? 'bg-white/20 text-white' : 'bg-gray-700 text-gray-300'
+                      }`}>{libraryCount}</span>
+                    )}
+                  </button>
+                </nav>
+                {/* Settings Button */}
+                <button onClick={() => { setKeyInput(apiKey); setShowSettings(!showSettings); }}
+                  aria-label="API Settings"
+                  className={`p-2 rounded-lg transition-colors ${apiKey ? 'text-green-400 hover:bg-gray-800' : 'text-amber-400 hover:bg-gray-800 animate-pulse'}`}>
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
                 </button>
-                <button role="tab" aria-selected={tab === 'library'} aria-controls="tab-library"
-                  onClick={() => setTab('library')}
-                  className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all flex items-center gap-2 ${
-                    tab === 'library' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
-                  }`}>
-                  My Library
-                  {libraryCount > 0 && (
-                    <span className={`tab-badge flex items-center justify-center rounded-full font-bold ${
-                      tab === 'library' ? 'bg-white/20 text-white' : 'bg-gray-700 text-gray-300'
-                    }`}>{libraryCount}</span>
-                  )}
-                </button>
-              </nav>
+              </div>
             </div>
           </header>
+
+          {/* API Key Settings Panel */}
+          {showSettings && (
+            <div className="bg-gray-900 border-b border-gray-800 fade-in">
+              <div className="max-w-5xl mx-auto px-4 py-4">
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="flex-1 min-w-[280px]">
+                    <label htmlFor="api-key-input" className="block text-xs text-gray-400 mb-1.5 font-medium">Anthropic API Key</label>
+                    <input id="api-key-input" type="password" value={keyInput} onChange={e => setKeyInput(e.target.value)}
+                      placeholder="sk-ant-api03-..."
+                      onKeyDown={e => { if (e.key === 'Enter') handleSaveKey(); }}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:border-indigo-500 transition-colors font-mono" />
+                  </div>
+                  <button onClick={handleSaveKey}
+                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+                    Save Key
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">Your key is stored in session memory only — it is never saved to disk or sent to any third party besides the Anthropic API.</p>
+                {apiKey && <p className="text-xs text-green-400 mt-1">Key configured: {apiKey.substring(0, 12)}...{apiKey.substring(apiKey.length - 4)}</p>}
+              </div>
+            </div>
+          )}
+
+          {/* No API Key Warning */}
+          {!apiKey && !showSettings && (
+            <div className="bg-amber-500/10 border-b border-amber-500/30">
+              <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+                <svg className="w-5 h-5 text-amber-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" /></svg>
+                <p className="text-sm text-amber-300">API key required. Click the <strong>key icon</strong> in the header to enter your Anthropic API key.</p>
+              </div>
+            </div>
+          )}
 
           {/* Content */}
           <main className="flex-1 px-4 py-8">
             <div id="tab-analyze" role="tabpanel" hidden={tab !== 'analyze'}>
-              {tab === 'analyze' && <AnalyzeTab onLibraryUpdate={updateLibraryCount} />}
+              {tab === 'analyze' && <AnalyzeTab onLibraryUpdate={updateLibraryCount} apiKey={apiKey} />}
             </div>
             <div id="tab-library" role="tabpanel" hidden={tab !== 'library'}>
               {tab === 'library' && <LibraryTab refreshKey={libraryRefresh} />}
