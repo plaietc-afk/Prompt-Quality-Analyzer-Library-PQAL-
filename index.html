@@ -75,14 +75,14 @@
     const MAX_ENTRIES = 100;
 
     /* ───────────────── Supabase Client ───────────────── */
-    let supabase = null;
+    let sbClient = null;
 
     async function initSupabase() {
       try {
         const res = await fetch('/api/config');
         const config = await res.json();
-        if (config.supabaseUrl && config.supabaseAnonKey) {
-          supabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
+        if (config.supabaseUrl && config.supabaseAnonKey && window.supabase) {
+          sbClient = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
           return true;
         }
       } catch {}
@@ -92,9 +92,9 @@
     /* ───────────────── Cloud Library (Supabase) ───────────────── */
     const cloudLib = {
       async getAll(userId) {
-        if (!supabase) return [];
+        if (!sbClient) return [];
         try {
-          const { data, error } = await supabase
+          const { data, error } = await sbClient
             .from('library_entries')
             .select('*')
             .eq('user_id', userId)
@@ -115,9 +115,9 @@
         } catch { return []; }
       },
       async save(userId, entry) {
-        if (!supabase) return false;
+        if (!sbClient) return false;
         try {
-          const { error } = await supabase.from('library_entries').insert({
+          const { error } = await sbClient.from('library_entries').insert({
             id: entry.id,
             user_id: userId,
             saved_at: entry.savedAt,
@@ -134,25 +134,25 @@
         } catch { return false; }
       },
       async remove(id) {
-        if (!supabase) return false;
+        if (!sbClient) return false;
         try {
-          const { error } = await supabase.from('library_entries').delete().eq('id', id);
+          const { error } = await sbClient.from('library_entries').delete().eq('id', id);
           if (error) throw error;
           return true;
         } catch { return false; }
       },
       async clearAll(userId) {
-        if (!supabase) return false;
+        if (!sbClient) return false;
         try {
-          const { error } = await supabase.from('library_entries').delete().eq('user_id', userId);
+          const { error } = await sbClient.from('library_entries').delete().eq('user_id', userId);
           if (error) throw error;
           return true;
         } catch { return false; }
       },
       async count(userId) {
-        if (!supabase) return 0;
+        if (!sbClient) return 0;
         try {
-          const { count, error } = await supabase
+          const { count, error } = await sbClient
             .from('library_entries')
             .select('id', { count: 'exact', head: true })
             .eq('user_id', userId);
@@ -632,12 +632,12 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
       useEffect(() => {
         initSupabase().then(ok => {
           setSupabaseReady(ok);
-          if (ok && supabase) {
-            supabase.auth.getSession().then(({ data: { session } }) => {
+          if (ok && sbClient) {
+            sbClient.auth.getSession().then(({ data: { session } }) => {
               setUser(session?.user || null);
               setAuthLoading(false);
             });
-            const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+            const { data: { subscription } } = sbClient.auth.onAuthStateChange((_event, session) => {
               setUser(session?.user || null);
             });
             return () => subscription.unsubscribe();
@@ -668,16 +668,16 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
       }, [keyInput]);
 
       const handleSignIn = useCallback(async () => {
-        if (!supabase) return;
-        await supabase.auth.signInWithOAuth({
+        if (!sbClient) return;
+        await sbClient.auth.signInWithOAuth({
           provider: 'google',
           options: { redirectTo: window.location.origin }
         });
       }, []);
 
       const handleSignOut = useCallback(async () => {
-        if (!supabase) return;
-        await supabase.auth.signOut();
+        if (!sbClient) return;
+        await sbClient.auth.signOut();
         setUser(null);
         setLibraryCount(0);
       }, []);
