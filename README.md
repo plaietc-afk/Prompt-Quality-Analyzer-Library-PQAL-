@@ -12,6 +12,14 @@ A web-based tool that analyzes AI prompt quality using professional prompt engin
 - **Thai + English** — Full Unicode support for Thai and English prompts; Buddhist Era date formatting
 - **Responsive** — Works from 375px mobile to 1440px desktop
 
+## API Key
+
+This app uses the **Groq API** (free tier) to power AI analysis.
+
+1. Sign up at [console.groq.com](https://console.groq.com) (free, no credit card required)
+2. Go to **API Keys** > **Create API Key**
+3. Enter the key in the app via the key icon in the header
+
 ## Quick Start
 
 ```bash
@@ -22,11 +30,7 @@ cd Prompt-Quality-Analyzer-Library-PQAL-
 # 2. Install dependencies
 npm install
 
-# 3. Set your API key
-cp .env.example .env
-# Edit .env and add your Anthropic API key
-
-# 4. Start the server
+# 3. Start the server
 npm start
 # Open http://localhost:3000
 ```
@@ -34,19 +38,19 @@ npm start
 ## Tech Stack
 
 - **Frontend**: React 18 (CDN) + Tailwind CSS (CDN) — single-file component, no build step
-- **Backend**: Express.js — serves static files and proxies Anthropic API calls
+- **Backend**: Express.js — serves static files and proxies Groq API calls
 - **Storage**: Browser localStorage with `promptlib:` key prefix
-- **API**: Anthropic Claude API (claude-sonnet-4-20250514)
+- **API**: Groq (Llama 3.3 70B) — free tier, no credit card required
 
 ## Architecture
 
 ```
 index.html   — Full React app (single-file component with all UI/logic)
 server.js    — Express server (static files + /api/analyze proxy)
-.env         — ANTHROPIC_API_KEY (never committed)
+.env         — GROQ_API_KEY (optional, never committed)
 ```
 
-The server acts as a secure proxy so the API key stays server-side and is never exposed to the browser.
+The server acts as a secure proxy so the API key stays server-side and is never exposed to the browser. Alternatively, users can enter the key directly in the UI (stored in session memory only).
 
 ## Scoring Frameworks
 
