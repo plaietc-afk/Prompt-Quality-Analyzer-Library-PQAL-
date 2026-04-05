@@ -6,10 +6,16 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '50kb' }));
-app.use(express.static(path.join(__dirname)));
+
+// Serve Supabase config to frontend (public keys only — safe to expose)
+app.get('/api/config', (_req, res) => {
+  res.json({
+    supabaseUrl: process.env.SUPABASE_URL || '',
+    supabaseAnonKey: process.env.SUPABASE_ANON_KEY || ''
+  });
+});
 
 // Proxy endpoint for Groq API (free tier)
-// Accepts API key from .env OR from x-api-key request header (UI input)
 app.post('/api/analyze', async (req, res) => {
   const apiKey = process.env.GROQ_API_KEY || req.headers['x-api-key'];
 
@@ -60,6 +66,8 @@ app.post('/api/analyze', async (req, res) => {
     res.status(502).json({ error: 'Failed to reach Groq API' });
   }
 });
+
+app.use(express.static(path.join(__dirname)));
 
 app.get('*', (_req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));

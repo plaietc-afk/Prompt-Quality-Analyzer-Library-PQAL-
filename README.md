@@ -5,20 +5,33 @@ A web-based tool that analyzes AI prompt quality using professional prompt engin
 ## Features
 
 - **AI-Powered Analysis** — Scores prompts across 6 dimensions: Clarity, Specificity, Context, Output Format, Role Assignment, Conciseness
+- **Google Sign-In** — OAuth authentication via Supabase for multi-user support
+- **Cloud Library** — Save, search, filter, and manage prompts per user (Supabase PostgreSQL)
 - **Animated Score Display** — SVG progress ring and color-coded dimension bars
 - **Improved Prompt Generation** — AI-rewritten best-practice version with one-click copy
-- **Prompt Library** — Save, search, filter, and manage your best prompts (localStorage)
 - **Dark Theme** — Full dark UI with accessible contrast ratios
-- **Thai + English** — Full Unicode support for Thai and English prompts; Buddhist Era date formatting
-- **Responsive** — Works from 375px mobile to 1440px desktop
+- **Thai + English** — Full Unicode support; Buddhist Era date formatting
+- **Responsive** — 375px mobile to 1440px desktop
 
-## API Key
+## API Keys
 
-This app uses the **Groq API** (free tier) to power AI analysis.
-
-1. Sign up at [console.groq.com](https://console.groq.com) (free, no credit card required)
+### Groq API (for AI analysis)
+1. Sign up at [console.groq.com](https://console.groq.com) (free, no credit card)
 2. Go to **API Keys** > **Create API Key**
-3. Enter the key in the app via the key icon in the header
+3. Users enter their own key via the key icon in the app header
+
+### Supabase (for auth + database)
+1. Create a project at [supabase.com](https://supabase.com) (free tier)
+2. Go to **Settings** > **API** and copy the **Project URL** and **anon/public key**
+3. Enable **Google OAuth** in **Authentication** > **Providers** > **Google**
+4. Run the SQL migration in **SQL Editor** (see `supabase-migration.sql`)
+5. Add `SUPABASE_URL` and `SUPABASE_ANON_KEY` to your `.env` file
+
+### Google OAuth Setup
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create an OAuth 2.0 Client ID (Web application)
+3. Add your Supabase callback URL: `https://<your-project>.supabase.co/auth/v1/callback`
+4. Copy the **Client ID** and **Client Secret** into Supabase Google provider settings
 
 ## Quick Start
 
@@ -30,27 +43,34 @@ cd Prompt-Quality-Analyzer-Library-PQAL-
 # 2. Install dependencies
 npm install
 
-# 3. Start the server
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your Supabase URL and anon key
+
+# 4. Run the database migration
+# Copy contents of supabase-migration.sql into Supabase SQL Editor and run
+
+# 5. Start the server
 npm start
 # Open http://localhost:3000
 ```
 
 ## Tech Stack
 
-- **Frontend**: React 18 (CDN) + Tailwind CSS (CDN) — single-file component, no build step
-- **Backend**: Express.js — serves static files and proxies Groq API calls
-- **Storage**: Browser localStorage with `promptlib:` key prefix
-- **API**: Groq (Llama 3.3 70B) — free tier, no credit card required
+- **Frontend**: React 18 (CDN) + Tailwind CSS (CDN) + Supabase JS (CDN)
+- **Backend**: Express.js — serves static files + proxies Groq API
+- **Auth**: Supabase Auth (Google OAuth)
+- **Database**: Supabase PostgreSQL with Row Level Security
+- **AI**: Groq (Llama 3.3 70B) — free tier
 
 ## Architecture
 
 ```
-index.html   — Full React app (single-file component with all UI/logic)
-server.js    — Express server (static files + /api/analyze proxy)
-.env         — GROQ_API_KEY (optional, never committed)
+index.html              — Full React app (auth, analyze, cloud library)
+server.js               — Express server (/api/config, /api/analyze proxy)
+supabase-migration.sql  — Database table + RLS policies
+.env                    — SUPABASE_URL, SUPABASE_ANON_KEY, GROQ_API_KEY (never committed)
 ```
-
-The server acts as a secure proxy so the API key stays server-side and is never exposed to the browser. Alternatively, users can enter the key directly in the UI (stored in session memory only).
 
 ## Scoring Frameworks
 

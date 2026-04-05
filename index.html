@@ -24,6 +24,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <style>
     @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     .fade-in { animation: fadeIn 0.3s ease-out; }
@@ -71,67 +72,93 @@
       { key: 'conciseness', label: 'Conciseness', desc: 'Free of redundancy and filler' }
     ];
 
-    const STORAGE_PREFIX = 'promptlib:';
-    const INDEX_KEY = 'promptlib:index';
     const MAX_ENTRIES = 100;
 
-    /* ───────────────── Storage Helpers ───────────────── */
-    const storage = {
-      _available: null,
-      isAvailable() {
-        if (this._available !== null) return this._available;
+    /* ───────────────── Supabase Client ───────────────── */
+    let supabase = null;
+
+    async function initSupabase() {
+      try {
+        const res = await fetch('/api/config');
+        const config = await res.json();
+        if (config.supabaseUrl && config.supabaseAnonKey) {
+          supabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
+          return true;
+        }
+      } catch {}
+      return false;
+    }
+
+    /* ───────────────── Cloud Library (Supabase) ───────────────── */
+    const cloudLib = {
+      async getAll(userId) {
+        if (!supabase) return [];
         try {
-          const k = '__storage_test__';
-          localStorage.setItem(k, '1');
-          localStorage.removeItem(k);
-          this._available = true;
-        } catch { this._available = false; }
-        return this._available;
-      },
-      getIndex() {
-        try {
-          const raw = localStorage.getItem(INDEX_KEY);
-          return raw ? JSON.parse(raw) : [];
+          const { data, error } = await supabase
+            .from('library_entries')
+            .select('*')
+            .eq('user_id', userId)
+            .order('saved_at', { ascending: false })
+            .limit(MAX_ENTRIES);
+          if (error) throw error;
+          return (data || []).map(row => ({
+            id: row.id,
+            savedAt: row.saved_at,
+            originalPrompt: row.original_prompt,
+            improvedPrompt: row.improved_prompt,
+            promptType: row.prompt_type,
+            language: row.language,
+            score: row.score,
+            grade: row.grade,
+            feedback: row.feedback
+          }));
         } catch { return []; }
       },
-      setIndex(ids) {
-        try { localStorage.setItem(INDEX_KEY, JSON.stringify(ids)); } catch {}
-      },
-      getEntry(id) {
+      async save(userId, entry) {
+        if (!supabase) return false;
         try {
-          const raw = localStorage.getItem(STORAGE_PREFIX + id);
-          return raw ? JSON.parse(raw) : null;
-        } catch { return null; }
+          const { error } = await supabase.from('library_entries').insert({
+            id: entry.id,
+            user_id: userId,
+            saved_at: entry.savedAt,
+            original_prompt: entry.originalPrompt,
+            improved_prompt: entry.improvedPrompt,
+            prompt_type: entry.promptType,
+            language: entry.language,
+            score: entry.score,
+            grade: entry.grade,
+            feedback: entry.feedback
+          });
+          if (error) throw error;
+          return true;
+        } catch { return false; }
       },
-      saveEntry(entry) {
+      async remove(id) {
+        if (!supabase) return false;
         try {
-          localStorage.setItem(STORAGE_PREFIX + entry.id, JSON.stringify(entry));
-          let ids = this.getIndex();
-          ids = [entry.id, ...ids.filter(i => i !== entry.id)];
-          if (ids.length > MAX_ENTRIES) {
-            const removed = ids.splice(MAX_ENTRIES);
-            removed.forEach(id => { try { localStorage.removeItem(STORAGE_PREFIX + id); } catch {} });
-          }
-          this.setIndex(ids);
-        } catch {}
+          const { error } = await supabase.from('library_entries').delete().eq('id', id);
+          if (error) throw error;
+          return true;
+        } catch { return false; }
       },
-      deleteEntry(id) {
+      async clearAll(userId) {
+        if (!supabase) return false;
         try {
-          localStorage.removeItem(STORAGE_PREFIX + id);
-          const ids = this.getIndex().filter(i => i !== id);
-          this.setIndex(ids);
-        } catch {}
+          const { error } = await supabase.from('library_entries').delete().eq('user_id', userId);
+          if (error) throw error;
+          return true;
+        } catch { return false; }
       },
-      clearAll() {
+      async count(userId) {
+        if (!supabase) return 0;
         try {
-          const ids = this.getIndex();
-          ids.forEach(id => { try { localStorage.removeItem(STORAGE_PREFIX + id); } catch {} });
-          this.setIndex([]);
-        } catch {}
-      },
-      getAllEntries() {
-        const ids = this.getIndex();
-        return ids.map(id => this.getEntry(id)).filter(Boolean);
+          const { count, error } = await supabase
+            .from('library_entries')
+            .select('id', { count: 'exact', head: true })
+            .eq('user_id', userId);
+          if (error) throw error;
+          return count || 0;
+        } catch { return 0; }
       }
     };
 
@@ -172,11 +199,7 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
     async function analyzePrompt(promptText, promptType, language, apiKey) {
       const userMessage = `Analyze this prompt:\n\nPrompt Type: ${promptType}\nLanguage: ${language}\n\n---\n${promptText}\n---`;
 
-      const body = {
-        systemPrompt: SYSTEM_PROMPT,
-        userMessage
-      };
-
+      const body = { systemPrompt: SYSTEM_PROMPT, userMessage };
       const headers = { 'Content-Type': 'application/json' };
       if (apiKey) headers['x-api-key'] = apiKey;
 
@@ -184,11 +207,7 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           if (attempt === 1) await new Promise(r => setTimeout(r, 5000));
-          const res = await fetch('/api/analyze', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body)
-          });
+          const res = await fetch('/api/analyze', { method: 'POST', headers, body: JSON.stringify(body) });
           if (!res.ok) {
             const errData = await res.json().catch(() => ({}));
             throw new Error(errData.error || `API error: ${res.status}`);
@@ -269,7 +288,7 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
     }
 
     /* ───────────────── Analyze Tab ───────────────── */
-    function AnalyzeTab({ onLibraryUpdate, apiKey }) {
+    function AnalyzeTab({ onLibraryUpdate, apiKey, user }) {
       const [prompt, setPrompt] = useState('');
       const [promptType, setPromptType] = useState('general');
       const [language, setLanguage] = useState('auto');
@@ -294,10 +313,10 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
         }
       }, [prompt, promptType, language, loading, apiKey]);
 
-      const handleSave = useCallback(() => {
+      const handleSave = useCallback(async () => {
         if (!result || saved) return;
-        if (!storage.isAvailable()) {
-          setError('Storage is unavailable. Cannot save to library.');
+        if (!user) {
+          setError('Please sign in with Google to save prompts to your library.');
           return;
         }
         const entry = {
@@ -319,10 +338,14 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
           grade: result.grade,
           feedback: result.feedback
         };
-        storage.saveEntry(entry);
-        setSaved(true);
-        onLibraryUpdate();
-      }, [result, saved, prompt, promptType, language, onLibraryUpdate]);
+        const ok = await cloudLib.save(user.id, entry);
+        if (ok) {
+          setSaved(true);
+          onLibraryUpdate();
+        } else {
+          setError('Failed to save. Please try again.');
+        }
+      }, [result, saved, prompt, promptType, language, onLibraryUpdate, user]);
 
       return (
         <div className="max-w-4xl mx-auto fade-in">
@@ -380,11 +403,9 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
               {/* Score + Dimensions */}
               <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800">
                 <div className="flex flex-col md:flex-row gap-8">
-                  {/* Score Ring */}
                   <div className="flex-shrink-0 flex justify-center">
                     <ScoreRing score={result.overall} grade={result.grade} />
                   </div>
-                  {/* Dimension Bars */}
                   <div className="flex-1">
                     <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Dimension Scores</h3>
                     {DIMENSIONS.map(d => (
@@ -392,7 +413,6 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
                     ))}
                   </div>
                 </div>
-                {/* Summary */}
                 <p className="mt-5 text-sm text-gray-300 bg-gray-800/50 rounded-lg px-4 py-3 border border-gray-700/50 font-thai">
                   {result.summary}
                 </p>
@@ -441,17 +461,22 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
     }
 
     /* ───────────────── Library Tab ───────────────── */
-    function LibraryTab({ refreshKey }) {
+    function LibraryTab({ user, refreshKey }) {
       const [entries, setEntries] = useState([]);
+      const [loading, setLoading] = useState(true);
       const [search, setSearch] = useState('');
       const [typeFilter, setTypeFilter] = useState('all');
       const [confirmDelete, setConfirmDelete] = useState(null);
       const [confirmClearAll, setConfirmClearAll] = useState(false);
-      const storageAvailable = storage.isAvailable();
 
       useEffect(() => {
-        if (storageAvailable) setEntries(storage.getAllEntries());
-      }, [refreshKey, storageAvailable]);
+        if (!user) { setEntries([]); setLoading(false); return; }
+        setLoading(true);
+        cloudLib.getAll(user.id).then(data => {
+          setEntries(data);
+          setLoading(false);
+        });
+      }, [user, refreshKey]);
 
       const filtered = entries.filter(e => {
         const matchSearch = !search || e.improvedPrompt.toLowerCase().includes(search.toLowerCase()) ||
@@ -460,17 +485,18 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
         return matchSearch && matchType;
       });
 
-      const handleDelete = useCallback((id) => {
-        storage.deleteEntry(id);
-        setEntries(storage.getAllEntries());
+      const handleDelete = useCallback(async (id) => {
+        await cloudLib.remove(id);
+        setEntries(prev => prev.filter(e => e.id !== id));
         setConfirmDelete(null);
       }, []);
 
-      const handleClearAll = useCallback(() => {
-        storage.clearAll();
+      const handleClearAll = useCallback(async () => {
+        if (!user) return;
+        await cloudLib.clearAll(user.id);
         setEntries([]);
         setConfirmClearAll(false);
-      }, []);
+      }, [user]);
 
       const formatDate = useCallback((iso, lang) => {
         const d = new Date(iso);
@@ -481,18 +507,24 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
         return d.toISOString().replace('T', ' ').substring(0, 16);
       }, []);
 
-      const typeLabel = useCallback((val) => {
-        return PROMPT_TYPES.find(t => t.value === val)?.label || val;
-      }, []);
-
+      const typeLabel = useCallback((val) => PROMPT_TYPES.find(t => t.value === val)?.label || val, []);
       const scoreColor = (s) => s >= 70 ? 'text-green-400 bg-green-500/15' : s >= 50 ? 'text-amber-400 bg-amber-500/15' : 'text-red-400 bg-red-500/15';
 
-      if (!storageAvailable) {
+      if (!user) {
         return (
           <div className="max-w-4xl mx-auto text-center py-20 text-gray-400">
-            <svg className="w-12 h-12 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-            <p className="text-lg font-medium">Storage Unavailable</p>
-            <p className="text-sm mt-1">Library persistence is not available in this browser.</p>
+            <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
+            <p className="text-lg font-medium">Sign in to access your library</p>
+            <p className="text-sm mt-2 text-gray-500">Sign in with Google to save and manage your prompts across devices.</p>
+          </div>
+        );
+      }
+
+      if (loading) {
+        return (
+          <div className="max-w-4xl mx-auto text-center py-20 text-gray-400">
+            <svg className="w-8 h-8 mx-auto mb-4 animate-spin text-indigo-400" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" /></svg>
+            <p className="text-sm">Loading your library...</p>
           </div>
         );
       }
@@ -592,13 +624,39 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
       });
       const [showSettings, setShowSettings] = useState(false);
       const [keyInput, setKeyInput] = useState(apiKey);
+      const [user, setUser] = useState(null);
+      const [authLoading, setAuthLoading] = useState(true);
+      const [supabaseReady, setSupabaseReady] = useState(false);
 
-      const updateLibraryCount = useCallback(() => {
-        if (storage.isAvailable()) {
-          setLibraryCount(storage.getIndex().length);
-          setLibraryRefresh(k => k + 1);
-        }
+      // Init Supabase and auth listener
+      useEffect(() => {
+        initSupabase().then(ok => {
+          setSupabaseReady(ok);
+          if (ok && supabase) {
+            supabase.auth.getSession().then(({ data: { session } }) => {
+              setUser(session?.user || null);
+              setAuthLoading(false);
+            });
+            const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+              setUser(session?.user || null);
+            });
+            return () => subscription.unsubscribe();
+          } else {
+            setAuthLoading(false);
+          }
+        });
       }, []);
+
+      // Update library count when user changes
+      const updateLibraryCount = useCallback(async () => {
+        if (user) {
+          const count = await cloudLib.count(user.id);
+          setLibraryCount(count);
+          setLibraryRefresh(k => k + 1);
+        } else {
+          setLibraryCount(0);
+        }
+      }, [user]);
 
       useEffect(() => { updateLibraryCount(); }, [updateLibraryCount]);
 
@@ -608,6 +666,21 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
         try { sessionStorage.setItem('pqal_apikey', trimmed); } catch {}
         setShowSettings(false);
       }, [keyInput]);
+
+      const handleSignIn = useCallback(async () => {
+        if (!supabase) return;
+        await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: { redirectTo: window.location.origin }
+        });
+      }, []);
+
+      const handleSignOut = useCallback(async () => {
+        if (!supabase) return;
+        await supabase.auth.signOut();
+        setUser(null);
+        setLibraryCount(0);
+      }, []);
 
       return (
         <div className="min-h-screen flex flex-col">
@@ -621,7 +694,7 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
                 <h1 className="text-lg font-bold text-gray-100">PQAL</h1>
                 <span className="text-xs text-gray-500 hidden sm:inline">Prompt Quality Analyzer & Library</span>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
                 {/* Tab Navigation */}
                 <nav className="flex gap-1 bg-gray-800 rounded-lg p-1" role="tablist">
                   <button role="tab" aria-selected={tab === 'analyze'} aria-controls="tab-analyze"
@@ -650,6 +723,26 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
                   className={`p-2 rounded-lg transition-colors ${apiKey ? 'text-green-400 hover:bg-gray-800' : 'text-amber-400 hover:bg-gray-800 animate-pulse'}`}>
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
                 </button>
+                {/* Auth Button */}
+                {supabaseReady && !authLoading && (
+                  user ? (
+                    <div className="flex items-center gap-2">
+                      {user.user_metadata?.avatar_url && (
+                        <img src={user.user_metadata.avatar_url} alt="" className="w-7 h-7 rounded-full border border-gray-700" />
+                      )}
+                      <button onClick={handleSignOut} aria-label="Sign out"
+                        className="text-xs text-gray-400 hover:text-gray-200 transition-colors px-2 py-1 rounded hover:bg-gray-800">
+                        Sign Out
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={handleSignIn} aria-label="Sign in with Google"
+                      className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 transition-colors">
+                      <svg className="w-4 h-4" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+                      Sign In
+                    </button>
+                  )
+                )}
               </div>
             </div>
           </header>
@@ -690,10 +783,10 @@ Feedback and improvedPrompt MUST match the language of the input prompt (Thai or
           {/* Content */}
           <main className="flex-1 px-4 py-8">
             <div id="tab-analyze" role="tabpanel" hidden={tab !== 'analyze'}>
-              {tab === 'analyze' && <AnalyzeTab onLibraryUpdate={updateLibraryCount} apiKey={apiKey} />}
+              {tab === 'analyze' && <AnalyzeTab onLibraryUpdate={updateLibraryCount} apiKey={apiKey} user={user} />}
             </div>
             <div id="tab-library" role="tabpanel" hidden={tab !== 'library'}>
-              {tab === 'library' && <LibraryTab refreshKey={libraryRefresh} />}
+              {tab === 'library' && <LibraryTab user={user} refreshKey={libraryRefresh} />}
             </div>
           </main>
 
